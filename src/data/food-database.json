@@ -1,0 +1,44 @@
+[
+  {
+    "id": "person_1",
+    "name": "Matt",
+    "favoriteFood": "kimchi",
+    "description": "Traditional Korean fermented vegetable dish, usually made with napa cabbage and Korean red pepper flakes",
+    "cuisine": "Korean",
+    "spicyLevel": "High",
+    "category": "Fermented",
+    "metadata": {
+      "addedBy": "System",
+      "lastUpdated": "2025-08-23",
+      "verified": true
+    }
+  },
+  {
+    "id": "person_2", 
+    "name": "Mark",
+    "favoriteFood": "fish and chips",
+    "description": "Classic British dish consisting of battered and fried fish served with thick-cut fried potatoes",
+    "cuisine": "British",
+    "spicyLevel": "None",
+    "category": "Fried",
+    "metadata": {
+      "addedBy": "System",
+      "lastUpdated": "2025-08-23",
+      "verified": true
+    }
+  },
+  {
+    "id": "person_3",
+    "name": "Mike", 
+    "favoriteFood": "mac and cheese",
+    "description": "American comfort food made with macaroni pasta and cheese sauce, often baked until golden",
+    "cuisine": "American",
+    "spicyLevel": "None",
+    "category": "Comfort Food",
+    "metadata": {
+      "addedBy": "System",
+      "lastUpdated": "2025-08-23",
+      "verified": true
+    }
+  }
+]
