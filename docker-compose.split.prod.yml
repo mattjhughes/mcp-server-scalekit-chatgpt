@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  mcp-auth:
+    image: csuaidevacr.azurecr.io/mcp-auth-proxy:latest
+    container_name: mcp-auth
+    hostname: mcp-auth
+    restart: unless-stopped
+    environment:
+      SK_ENV_URL: ${SK_ENV_URL}
+      SK_CLIENT_ID: ${SK_CLIENT_ID}
+      SK_CLIENT_SECRET: ${SK_CLIENT_SECRET}
+      MCP_SERVER_ID: ${MCP_SERVER_ID}
+      AUTH_PORT: ${AUTH_PORT:-3000}
+      BACKEND_SERVER_URL: http://mcp-server:4000/
+    expose:
+      - "3000"
+    networks:
+      - demo
+
+  mcp-server:
+    image: csuaidevacr.azurecr.io/mcp-server-scalekit:latest
+    container_name: mcp-server
+    hostname: mcp-server
+    restart: unless-stopped
+    environment:
+      SK_ENV_URL: ${SK_ENV_URL}
+      SK_CLIENT_ID: ${SK_CLIENT_ID}
+      SK_CLIENT_SECRET: ${SK_CLIENT_SECRET}
+      MCP_SERVER_ID: ${MCP_SERVER_ID}
+      SERVER_PORT: ${SERVER_PORT:-4000}
+    expose:
+      - "4000"
+    networks:
+      - demo
+
+networks:
+  demo:
+    name: demo
+    driver: bridge
