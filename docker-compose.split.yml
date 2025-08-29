@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  mcp-auth:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth
+    image: mcp-auth:latest
+    container_name: mcp-auth
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AUTH_PORT: ${AUTH_PORT:-3000}
+      BACKEND_SERVER_URL: http://mcp-server:4000/
+    ports:
+      - "3000:3000"
+    networks:
+      - demo
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: mcp-server:latest
+    container_name: mcp-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVER_PORT: ${SERVER_PORT:-4000}
+    expose:
+      - "4000"
+    networks:
+      - demo
+
+networks:
+  demo:
+    name: demo
+    driver: bridge

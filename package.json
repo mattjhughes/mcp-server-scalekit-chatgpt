@@ -2,11 +2,16 @@
   "name": "search-mcp-server", 
   "version": "1.0.0",
   "description": "MCP server with search and fetch tools for ChatGPT Connectors",
-  "main": "dist/main.js",
+  "main": "dist-server/main.js",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/main.js",
+    "build:auth": "tsc -p tsconfig.auth.json",
+    "build:server": "tsc -p tsconfig.server.json && npm run copy-data:server",
+    "build": "npm run build:auth && npm run build:server",
+    "start:auth": "node dist-auth/main.js",
+    "start:server": "node dist-server/main.js",
+    "start": "npm-run-all -p start:auth start:server",
+    "copy-data:server": "mkdir -p dist-server/data && cp -R src-server/data/* dist-server/data/",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -21,6 +26,7 @@
     "jsonwebtoken": "^9.0.2",
     "jwk-to-pem": "^2.0.5",
     "node-fetch": "^3.3.2",
+    "npm-run-all": "^4.1.5",
     "winston": "^3.10.0",
     "yaml": "^2.4.1",
     "zod": "^3.25.57"

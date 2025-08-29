@@ -1,0 +1,5 @@
+[
+  {"id": "1", "name": "Alice", "favoriteFood": "Sushi", "description": "Loves fresh sushi and sashimi.", "cuisine": "Japanese", "spicyLevel": "Low", "category": "Seafood", "metadata": {"addedBy": "system", "lastUpdated": "2024-01-01", "verified": true}},
+  {"id": "2", "name": "Bob", "favoriteFood": "Tacos", "description": "Enjoys spicy beef tacos with salsa.", "cuisine": "Mexican", "spicyLevel": "Medium", "category": "Street Food", "metadata": {"addedBy": "system", "lastUpdated": "2024-01-05", "verified": true}},
+  {"id": "3", "name": "Carol", "favoriteFood": "Pad Thai", "description": "Prefers sweet and savory noodles.", "cuisine": "Thai", "spicyLevel": "Low", "category": "Noodles", "metadata": {"addedBy": "user:carol", "lastUpdated": "2024-02-20", "verified": false}}
+]

@@ -275,3 +275,34 @@ docker buildx build \
 ```
 
 Once pushed, you can deploy the image from your ACR to your runtime of choice (e.g., Azure Container Apps, AKS, App Service containers). Ensure the container receives environment variables from your `.env` (or equivalent secrets/config in your deployment target) and exposes port `3000`.
+ 
+## Split Mode (Auth Gateway + Tools Server)
+
+This repository now includes a split architecture where the OAuth-facing gateway is decoupled from the MCP tools server. This allows you to swap out the backend MCP implementation with minimal changes.
+
+Components:
+- Auth Gateway (`src-auth`):
+  - Exposes OAuth discovery endpoints
+  - Validates tokens (audience)
+  - Proxies MCP JSON-RPC traffic to the backend tools server
+- Tools Server (`src-server`):
+  - Hosts the MCP server and registers tools
+  - Enforces scopes per tool
+
+Key environment variables:
+- `AUTH_PORT` (default 3000)
+- `SERVER_PORT` (default 4000)
+- `PUBLIC_BASE_URL` (external URL of auth gateway)
+- `BACKEND_SERVER_URL` (URL the gateway uses to reach the tools server; default `http://localhost:4000/`)
+- `SK_ENV_URL`, `SK_CLIENT_ID`, `SK_CLIENT_SECRET`, `MCP_SERVER_ID`
+
+Local run:
+1. npm install
+2. npm run build
+3. In one terminal: `npm run start:server` (listens on 4000)
+4. In another: `npm run start:auth` (listens on 3000)
+
+Docker Compose:
+```
+docker compose -f docker-compose.split.yml up --build
+```
