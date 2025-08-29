@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  mcp-server-scalekit:
+    image: csuaidevacr.azurecr.io/mcp-server-scalekit:latest
+    container_name: mcp-server-scalekit
+    hostname: mcp-server-scalekit
+    restart: unless-stopped
+    environment:
+      SK_ENV_URL: ${SK_ENV_URL}
+      SK_CLIENT_ID: ${SK_CLIENT_ID}
+      SK_CLIENT_SECRET: ${SK_CLIENT_SECRET}
+      MCP_SERVER_ID: ${MCP_SERVER_ID}
+    expose:
+      - "3000"
+    networks:
+      - demo
+
+networks:
+  demo:
+    name: demo
+    driver: bridge

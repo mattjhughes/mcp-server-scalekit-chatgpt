@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  mcp-server-scalekit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcp-server-scalekit:latest
+    container_name: mcp-server-scalekit
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    networks:
+      - demo
+
+networks:
+  demo:
+    name: demo
+    driver: bridge

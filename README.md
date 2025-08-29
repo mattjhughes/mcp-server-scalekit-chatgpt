@@ -244,3 +244,34 @@ The server includes comprehensive logging to verify functionality:
 - **No secrets in logs** or responses
 
 This server provides a complete foundation for building MCP-compatible services with enterprise-grade OAuth authentication.
+
+## Deploying to Azure Container Registry (ACR)
+
+Build a multi-arch image and push it to your ACR. Replace the placeholders with your details.
+
+Prerequisites:
+- Logged into Azure: `az login`
+- Logged into your ACR: `az acr login -n <acrName>`
+- Docker Buildx available (Docker Desktop enables it by default)
+
+Quick start with helper script:
+
+```bash
+chmod +x scripts/build-and-push-acr.sh
+./scripts/build-and-push-acr.sh <acrName> mcp-server-scalekit <tag>
+# Example
+./scripts/build-and-push-acr.sh csuaidevacr mcp-server-scalekit latest
+```
+
+Equivalent manual command:
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t <acrName>.azurecr.io/mcp-server-scalekit:<tag> \
+  -f Dockerfile \
+  --push \
+  .
+```
+
+Once pushed, you can deploy the image from your ACR to your runtime of choice (e.g., Azure Container Apps, AKS, App Service containers). Ensure the container receives environment variables from your `.env` (or equivalent secrets/config in your deployment target) and exposes port `3000`.
