@@ -13,16 +13,35 @@ A comprehensive MCP (Model Context Protocol) server that demonstrates OAuth 2.1 
 
 ## Architecture Overview
 
+Monolith (legacy):
 ```
-┌─────────────────┐    ┌──────────────┐    ┌─────────────────┐
-│   MCP Client    │───▶│    ngrok     │───▶│   MCP Server    │
-│ (ChatGPT/Claude)│    │   Tunnel     │    │  (port 3000)    │
-└─────────────────┘    └──────────────┘    └─────────────────┘
-                                                     │
-                                            ┌─────────────────┐
-                                            │   ScaleKit      │
-                                            │ OAuth Provider  │
-                                            └─────────────────┘
+┌─────────────────┐    ┌──────────────┐    ┌────────────────────────┐
+│   MCP Client    │───▶│    ngrok     │───▶│ Monolith MCP Server    │
+│ (ChatGPT/Claude)│    │   Tunnel     │    │  (OAuth + Tools @3000) │
+└─────────────────┘    └──────────────┘    └────────────────────────┘
+                │
+             ┌─────────────────┐
+             │   ScaleKit      │
+             │ OAuth Provider  │
+             └─────────────────┘
+```
+
+Split (recommended):
+```
+┌─────────────────┐    ┌──────────────┐    ┌────────────────────────┐
+│   MCP Client    │───▶│    ngrok     │───▶│ Auth Gateway (port 3000)│
+│ (ChatGPT/Claude)│    │   Tunnel     │    └───────────┬─────────────┘
+└─────────────────┘    └──────────────┘                │ JSON-RPC proxy
+                   ▼
+                 ┌──────────────────────┐
+                 │ Tools Server (@4000) │
+                 │  (MCP + tools only)  │
+                 └───────────┬──────────┘
+                 │
+               ┌───────────────┐
+               │   ScaleKit    │
+               │ OAuth Provider│
+               └───────────────┘
 ```
 
 ## Available Tools
@@ -115,7 +134,7 @@ SK_CLIENT_ID=your_client_id_here
 SK_CLIENT_SECRET=your_client_secret_here
 MCP_SERVER_ID=res_your_resource_id_here
 
-# Server Configuration  
+# Server Configuration (monolith)
 PORT=3000
 
 # Public URL (ngrok tunnel URL for development)
@@ -132,7 +151,7 @@ This server is designed to work with ngrok for local development:
 4. **Update .env**: Set `PUBLIC_BASE_URL` to your ngrok URL
 5. **Update ScaleKit**: Configure your ScaleKit resource with the ngrok URL
 
-### 3. Installation & Running
+### 3. Installation & Running (Monolith)
 
 ```bash
 # Install dependencies
@@ -141,12 +160,11 @@ npm install
 # Build TypeScript
 npm run build
 
-# Copy JSON database to dist directory
-mkdir -p dist/data && cp src/data/food-database.json dist/data/
-
 # Start server
 npm start
 ```
+
+For Split mode (Auth Gateway + Tools Server), see below.
 
 ## Key Components Explained
 
@@ -199,7 +217,7 @@ npm start
 
 ## Development Notes
 
-### File Structure
+### File Structure (Monolith)
 ```
 src/
 ├── config/config.ts          # Environment configuration
@@ -213,6 +231,30 @@ src/
 │   ├── index.ts             # Tool registration
 │   └── search.ts            # Search & fetch tools
 └── main.ts                  # Express server setup
+```
+
+### File Structure (Split)
+```
+src-auth/
+├── main.ts                  # Express app (OAuth discovery, proxy)
+└── shared/
+  ├── auth.ts              # OAuth protected resource metadata
+  ├── config.ts            # Auth gateway env/config
+  ├── logger.ts            # Winston logger
+  └── middleware.ts        # Audience validation + pass-through
+
+src-server/
+├── main.ts                  # Express app hosting MCP server
+├── shared/
+│   ├── config.ts            # Tools server env/config
+│   ├── logger.ts            # Winston logger
+│   ├── middleware.ts        # Token + scope validation
+│   └── transport.ts         # MCP transport setup
+├── tools/
+│   ├── index.ts             # Tool registry
+│   └── search.ts            # Search & fetch tools
+└── data/
+  └── food-database.json   # JSON pseudo database
 ```
 
 ### Logging
@@ -254,7 +296,7 @@ Prerequisites:
 - Logged into your ACR: `az acr login -n <acrName>`
 - Docker Buildx available (Docker Desktop enables it by default)
 
-Quick start with helper script:
+Quick start with helper script (Monolith):
 
 ```bash
 chmod +x scripts/build-and-push-acr.sh
@@ -306,3 +348,29 @@ Docker Compose:
 ```
 docker compose -f docker-compose.split.yml up --build
 ```
+
+Production split (ACR images):
+```
+docker compose -f docker-compose.split.prod.yml up -d
+```
+
+Environment variables for split mode:
+- See `.env.sample.split` for a ready-to-copy template
+- Auth Gateway: `AUTH_PORT` (default 3000), `PUBLIC_BASE_URL`, `BACKEND_SERVER_URL` (default `http://localhost:4000/`)
+- Tools Server: `SERVER_PORT` (default 4000)
+- Shared: `SK_ENV_URL`, `SK_CLIENT_ID`, `SK_CLIENT_SECRET`, `MCP_SERVER_ID`
+
+Build & push split images to ACR:
+```bash
+chmod +x scripts/build-and-push-acr-split.sh
+./scripts/build-and-push-acr-split.sh <acrName> mcp-auth-scalekit mcp-server-scalekit <tag>
+# Example
+./scripts/build-and-push-acr-split.sh csuaidevacr mcp-auth-scalekit mcp-server-scalekit latest
+```
+
+The production compose (`docker-compose.split.prod.yml`) expects images:
+- `csuaidevacr.azurecr.io/mcp-auth-scalekit:<tag>`
+- `csuaidevacr.azurecr.io/mcp-server-scalekit:<tag>`
+
+Swap backend MCP server with minimal changes:
+- Update the Auth Gateway’s `BACKEND_SERVER_URL` to point at a different tools server service name or URL. No other changes are required on the front-end auth app.
