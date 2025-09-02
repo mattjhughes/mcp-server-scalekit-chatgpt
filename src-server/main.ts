@@ -19,6 +19,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'mcp-protocol-version']
 }));
 app.use(express.json());
+// Honor X-Forwarded-* from the auth gateway for accurate req.ip/req.ips
+app.set('trust proxy', true);
 app.use(authMiddleware);
 
 setupTransportRoutes(app, server);

@@ -32,14 +32,15 @@ export const setupTransportRoutes = (
     };
 
     // Source addressing info
-    const xff = req.get('x-forwarded-for');
-    const xfp = req.get('x-forwarded-proto');
-    const xfh = req.get('x-forwarded-host');
+  const xff = req.get('x-forwarded-for');
+  const xfp = req.get('x-forwarded-proto');
+  const xfh = req.get('x-forwarded-host');
+  const reqId = (req.get('x-request-id') || req.get('x-correlation-id')) || '';
     const remoteAddr = req.socket?.remoteAddress;
     const reqIp = req.ip;
     const reqIps = (req.ips || []).join(', ');
 
-    logger.info('MCP SERVER: Incoming MCP request from proxy');
+  logger.info(`MCP SERVER [${reqId || 'no-id'}]: Incoming MCP request from proxy`);
     logger.info(
       `Source addresses: remoteAddress=${remoteAddr}, req.ip=${reqIp}, req.ips=[${reqIps}], x-forwarded-for=${xff || 'n/a'}, x-forwarded-proto=${xfp || 'n/a'}, x-forwarded-host=${xfh || 'n/a'}`
     );
@@ -50,7 +51,7 @@ export const setupTransportRoutes = (
     res.on('finish', () => {
       try {
         const headers = res.getHeaders();
-        logger.info(`MCP SERVER: Response status=${res.statusCode}`);
+        logger.info(`MCP SERVER [${reqId || 'no-id'}]: Response status=${res.statusCode}`);
         logger.info(`Response headers: ${safeStringify(redactHeaders(headers as any))}`);
         // Avoid logging body to preserve streaming and performance; rely on proxy logs for payload
       } catch (e) {
@@ -61,6 +62,11 @@ export const setupTransportRoutes = (
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
     try {
+      // Ensure correlation headers are echoed back for tracing
+      if (reqId) {
+        res.setHeader('x-request-id', reqId);
+        res.setHeader('x-correlation-id', reqId);
+      }
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
       logger.error('Transport error:', error as Error);

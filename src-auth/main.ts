@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express, { Request, Response } from 'express';
 import fetch from 'node-fetch';
+import { randomUUID } from 'crypto';
 import { config } from './shared/config.js';
 import { authMiddleware, WWWHeader } from './shared/middleware.js';
 import { oauthProtectedResourceHandler } from './shared/auth.js';
@@ -94,24 +95,49 @@ app.post('/', async (req: Request, res: Response) => {
     const backendUrl = config.backendServerUrl;
     const authHeader = req.headers['authorization'] as string | undefined;
     const mcpVersion = req.headers['mcp-protocol-version'] as string | undefined;
+    const incomingReqId = (req.headers['x-request-id'] || req.headers['x-correlation-id']) as string | undefined;
+    const correlationId = incomingReqId || randomUUID();
 
     // Log inbound request from client
-    logger.info(
-      `AUTH GATEWAY: Incoming MCP request -> forwarding to backend`,
-    );
-    logger.info(
-      `Incoming headers: ${safeStringify(redactHeaders(req.headers as any))}`
-    );
+    logger.info(`AUTH GATEWAY [${correlationId}]: Incoming MCP request -> forwarding to backend`);
+    logger.info(`Incoming headers: ${safeStringify(redactHeaders(req.headers as any))}`);
     logger.info(`Incoming payload: ${safeStringify(req.body)}`);
+
+    // Build Forwarded headers
+    const prevXff = (req.headers['x-forwarded-for'] as string | undefined) || '';
+    const clientIp = (req.ip || req.socket?.remoteAddress || '').toString();
+    const xff = prevXff ? `${prevXff}, ${clientIp}` : clientIp;
+    const xfp = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
+    const xfh = (req.headers['x-forwarded-host'] as string | undefined) || (req.headers['host'] as string | undefined) || '';
+
+    // Merge incoming Accept with required values
+    const incomingAccept = (req.headers['accept'] as string | undefined) || '';
+    const acceptParts = new Set(
+      incomingAccept
+        .split(',')
+        .map(s => s.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    acceptParts.add('application/json');
+    acceptParts.add('text/event-stream');
+    const mergedAccept = Array.from(acceptParts).join(', ');
 
     const forwardHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(authHeader ? { Authorization: authHeader } : {}),
       ...(mcpVersion ? { 'mcp-protocol-version': mcpVersion } : {}),
+      // Ensure MCP server sees JSON + SSE, merged with client preferences
+      'accept': mergedAccept,
+      'x-request-id': correlationId,
+      'x-correlation-id': correlationId,
+      ...(xff ? { 'x-forwarded-for': xff } : {}),
+      ...(xfp ? { 'x-forwarded-proto': xfp } : {}),
+      ...(xfh ? { 'x-forwarded-host': xfh } : {}),
+      'via': 'mcp-auth-gateway',
     };
 
     // Log outbound request to backend
-    logger.info(`Forwarding to backend URL: ${backendUrl}`);
+    logger.info(`AUTH GATEWAY [${correlationId}]: Forwarding to backend URL: ${backendUrl}`);
     logger.info(`Forwarded headers: ${safeStringify(redactHeaders(forwardHeaders))}`);
     logger.info(`Forwarded payload: ${safeStringify(req.body)}`);
 
@@ -125,12 +151,14 @@ app.post('/', async (req: Request, res: Response) => {
     const text = await resp.text();
 
     // Log response from backend
-    logger.info(`Backend response status: ${resp.status}`);
+    logger.info(`AUTH GATEWAY [${correlationId}]: Backend response status: ${resp.status}`);
     const backendHeadersObj = Object.fromEntries(resp.headers.entries());
     logger.info(`Backend response headers: ${safeStringify(redactHeaders(backendHeadersObj))}`);
     logger.info(`Backend response payload: ${safeStringify(text)}`);
 
     res.status(resp.status);
+    res.setHeader('x-request-id', correlationId);
+    res.setHeader('x-correlation-id', correlationId);
     resp.headers.forEach((v: string, k: string) => res.setHeader(k, v));
     res.send(text);
   } catch (err) {
