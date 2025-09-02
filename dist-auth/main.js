@@ -6,6 +6,29 @@ import { authMiddleware, WWWHeader } from './shared/middleware.js';
 import { oauthProtectedResourceHandler } from './shared/auth.js';
 import { logger } from './shared/logger.js';
 const app = express();
+// Helpers for safe logging
+function redactHeaders(h) {
+    const src = typeof h.forEach === 'function'
+        ? Object.fromEntries(h.entries())
+        : Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), String(v)]));
+    const out = { ...src };
+    if (out['authorization']) {
+        // Mask tokens but keep type
+        const val = out['authorization'];
+        const [scheme, token] = val.split(' ');
+        out['authorization'] = token ? `${scheme} ***redacted***` : '***redacted***';
+    }
+    return out;
+}
+function safeStringify(body, max = 8000) {
+    try {
+        const s = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+        return s.length > max ? s.slice(0, max) + `\n…truncated (${s.length - max} bytes)` : s;
+    }
+    catch {
+        return '[unserializable body]';
+    }
+}
 app.use(cors({
     origin: [config.publicBaseUrl, config.skEnvUrl, 'http://localhost:6274'],
     credentials: true,
@@ -63,17 +86,31 @@ app.post('/', async (req, res) => {
         const backendUrl = config.backendServerUrl;
         const authHeader = req.headers['authorization'];
         const mcpVersion = req.headers['mcp-protocol-version'];
+        // Log inbound request from client
+        logger.info(`AUTH GATEWAY: Incoming MCP request -> forwarding to backend`);
+        logger.info(`Incoming headers: ${safeStringify(redactHeaders(req.headers))}`);
+        logger.info(`Incoming payload: ${safeStringify(req.body)}`);
+        const forwardHeaders = {
+            'Content-Type': 'application/json',
+            ...(authHeader ? { Authorization: authHeader } : {}),
+            ...(mcpVersion ? { 'mcp-protocol-version': mcpVersion } : {}),
+        };
+        // Log outbound request to backend
+        logger.info(`Forwarding to backend URL: ${backendUrl}`);
+        logger.info(`Forwarded headers: ${safeStringify(redactHeaders(forwardHeaders))}`);
+        logger.info(`Forwarded payload: ${safeStringify(req.body)}`);
         const resp = await fetch(backendUrl, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...(authHeader ? { Authorization: authHeader } : {}),
-                ...(mcpVersion ? { 'mcp-protocol-version': mcpVersion } : {})
-            },
+            headers: forwardHeaders,
             body: JSON.stringify(req.body)
         });
         // Stream or relay JSON result back
         const text = await resp.text();
+        // Log response from backend
+        logger.info(`Backend response status: ${resp.status}`);
+        const backendHeadersObj = Object.fromEntries(resp.headers.entries());
+        logger.info(`Backend response headers: ${safeStringify(redactHeaders(backendHeadersObj))}`);
+        logger.info(`Backend response payload: ${safeStringify(text)}`);
         res.status(resp.status);
         resp.headers.forEach((v, k) => res.setHeader(k, v));
         res.send(text);
