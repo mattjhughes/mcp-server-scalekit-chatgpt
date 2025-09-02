@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   mcp-auth:
-    image: csuaidevacr.azurecr.io/mcp-auth-proxy:latest
+    image: csuaidevacr.azurecr.io/mcp-auth-scalekit:latest
     container_name: mcp-auth
     hostname: mcp-auth
     restart: unless-stopped
