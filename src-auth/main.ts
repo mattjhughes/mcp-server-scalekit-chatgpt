@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express, { Request, Response } from 'express';
 import fetch from 'node-fetch';
+import { Readable, pipeline } from 'stream';
 import { randomUUID } from 'crypto';
 import { config } from './shared/config.js';
 import { authMiddleware, WWWHeader } from './shared/middleware.js';
@@ -43,6 +44,9 @@ app.use(cors({
 app.use(express.json());
 
 // Public OAuth discovery + registration endpoints
+app.get('/health', (_req: Request, res: Response) => {
+  res.status(200).json({ status: 'ok', service: 'auth-gateway', time: new Date().toISOString() });
+});
 app.get('/.well-known/oauth-protected-resource', oauthProtectedResourceHandler);
 app.options('/.well-known/oauth-protected-resource', (_req: Request, res: Response) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -147,19 +151,78 @@ app.post('/', async (req: Request, res: Response) => {
       body: JSON.stringify(req.body)
     });
 
-    // Stream or relay JSON result back
-    const text = await resp.text();
+    // Relay response back; sanitize hop-by-hop headers and stream when needed
+    const contentType = resp.headers.get('content-type') || '';
+    const isEventStream = contentType.toLowerCase().includes('text/event-stream');
 
-    // Log response from backend
     logger.info(`AUTH GATEWAY [${correlationId}]: Backend response status: ${resp.status}`);
     const backendHeadersObj = Object.fromEntries(resp.headers.entries());
     logger.info(`Backend response headers: ${safeStringify(redactHeaders(backendHeadersObj))}`);
-    logger.info(`Backend response payload: ${safeStringify(text)}`);
+
+    // Remove hop-by-hop headers and CL/TE to avoid nginx conflicts when streaming
+    const hopByHop = new Set([
+      'connection',
+      'keep-alive',
+      'proxy-authenticate',
+      'proxy-authorization',
+      'te',
+      'trailer',
+      'trailers',
+      'transfer-encoding',
+      'upgrade',
+      'content-length',
+    ]);
+    const sanitizedHeaders: Record<string, string> = {};
+    resp.headers.forEach((v, k) => {
+      const key = k.toLowerCase();
+      if (hopByHop.has(key)) return;
+      sanitizedHeaders[key] = v;
+    });
 
     res.status(resp.status);
+    // Set correlation headers first
     res.setHeader('x-request-id', correlationId);
     res.setHeader('x-correlation-id', correlationId);
-    resp.headers.forEach((v: string, k: string) => res.setHeader(k, v));
+    // Mirror sanitized headers
+    for (const [k, v] of Object.entries(sanitizedHeaders)) {
+      try { res.setHeader(k, v); } catch { /* ignore invalid header */ }
+    }
+    // Strengthen SSE headers if applicable
+    if (isEventStream) {
+      res.setHeader('Cache-Control', res.getHeader('cache-control') || 'no-cache');
+      res.setHeader('Connection', res.getHeader('connection') || 'keep-alive');
+      res.setHeader('Content-Type', 'text/event-stream');
+    }
+    // Ensure CL/TE are not present to prevent CL+TE conflicts
+    res.removeHeader('content-length');
+    res.removeHeader('transfer-encoding');
+    (res as any).flushHeaders?.();
+
+    // Stream when event-stream; otherwise buffer and send
+    if (isEventStream) {
+      const body = resp.body as any;
+      try {
+        if (!body) {
+          res.end();
+        } else if (typeof body.pipe === 'function') {
+          pipeline(body, res, (err) => {
+            if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
+          });
+        } else {
+          const nodeStream = Readable.fromWeb(body);
+          pipeline(nodeStream, res, (err) => {
+            if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
+          });
+        }
+        return;
+      } catch (e) {
+        logger.warn(`AUTH GATEWAY [${correlationId}]: Failed to stream body, falling back to buffer: ${(e as Error).message}`);
+      }
+    }
+
+    // Fallback / JSON: buffer and send
+    const text = await resp.text();
+    logger.info(`AUTH GATEWAY [${correlationId}]: Backend response payload: ${safeStringify(text)}`);
     res.send(text);
   } catch (err) {
     logger.error('Proxy error:', err);

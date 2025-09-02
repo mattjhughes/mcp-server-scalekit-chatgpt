@@ -23,6 +23,11 @@ app.use(express.json());
 app.set('trust proxy', true);
 app.use(authMiddleware);
 
+// Basic health endpoint
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', service: 'mcp-tools-server', time: new Date().toISOString() });
+});
+
 setupTransportRoutes(app, server);
 logger.info('Transport routes set up successfully');
 

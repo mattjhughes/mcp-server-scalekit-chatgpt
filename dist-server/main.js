@@ -19,6 +19,10 @@ app.use(express.json());
 // Honor X-Forwarded-* from the auth gateway for accurate req.ip/req.ips
 app.set('trust proxy', true);
 app.use(authMiddleware);
+// Basic health endpoint
+app.get('/health', (_req, res) => {
+    res.status(200).json({ status: 'ok', service: 'mcp-tools-server', time: new Date().toISOString() });
+});
 setupTransportRoutes(app, server);
 logger.info('Transport routes set up successfully');
 registerTools(server);
