@@ -1,7 +1,7 @@
 import cors from 'cors';
 import express, { Request, Response } from 'express';
 import fetch from 'node-fetch';
-import { Readable, pipeline } from 'stream';
+import { Readable, pipeline, Transform } from 'stream';
 import { randomUUID } from 'crypto';
 import { config } from './shared/config.js';
 import { authMiddleware, WWWHeader } from './shared/middleware.js';
@@ -33,6 +33,33 @@ function safeStringify(body: unknown, max = 8000): string {
   } catch {
     return '[unserializable body]';
   }
+}
+
+// Create a Transform that logs chunks while passing them through unchanged
+function createResponseLoggingTransform(correlationId: string, maxTotalBytes = 64 * 1024) {
+  let total = 0;
+  let suppressed = false;
+  return new Transform({
+    transform(chunk, _enc, cb) {
+      try {
+        if (!suppressed) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+          total += buf.length;
+          // Log a readable slice to avoid massive logs
+          const preview = buf.subarray(0, Math.min(buf.length, 4096)).toString('utf8');
+          logger.info(`AUTH GATEWAY [${correlationId}]: SSE chunk (${buf.length} bytes): ${safeStringify(preview, 4096)}`);
+          if (total >= maxTotalBytes) {
+            suppressed = true;
+            logger.info(`AUTH GATEWAY [${correlationId}]: Reached response log cap (${maxTotalBytes} bytes); suppressing further chunk logs`);
+          }
+        }
+      } catch (e) {
+        logger.warn(`AUTH GATEWAY [${correlationId}]: Failed to log SSE chunk: ${(e as Error).message}`);
+      }
+      this.push(chunk);
+      cb();
+    }
+  });
 }
 
 app.use(cors({
@@ -114,7 +141,7 @@ app.post('/', async (req: Request, res: Response) => {
     const xfp = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
     const xfh = (req.headers['x-forwarded-host'] as string | undefined) || (req.headers['host'] as string | undefined) || '';
 
-    // Merge incoming Accept with required values
+    // Merge incoming Accept with JSON + SSE to support both transports
     const incomingAccept = (req.headers['accept'] as string | undefined) || '';
     const acceptParts = new Set(
       incomingAccept
@@ -124,14 +151,14 @@ app.post('/', async (req: Request, res: Response) => {
     );
     acceptParts.add('application/json');
     acceptParts.add('text/event-stream');
-    const mergedAccept = Array.from(acceptParts).join(', ');
+    const acceptHeader = Array.from(acceptParts).join(', ');
 
     const forwardHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(authHeader ? { Authorization: authHeader } : {}),
       ...(mcpVersion ? { 'mcp-protocol-version': mcpVersion } : {}),
-      // Ensure MCP server sees JSON + SSE, merged with client preferences
-      'accept': mergedAccept,
+  // Ensure MCP server sees JSON + SSE support
+  'accept': acceptHeader,
       'x-request-id': correlationId,
       'x-correlation-id': correlationId,
       ...(xff ? { 'x-forwarded-for': xff } : {}),
@@ -201,15 +228,18 @@ app.post('/', async (req: Request, res: Response) => {
       try {
         if (!body) {
           res.end();
-        } else if (typeof body.pipe === 'function') {
-          pipeline(body, res, (err) => {
-            if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
-          });
         } else {
-          const nodeStream = Readable.fromWeb(body);
-          pipeline(nodeStream, res, (err) => {
-            if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
-          });
+          const logT = createResponseLoggingTransform(correlationId);
+          if (typeof body.pipe === 'function') {
+            pipeline(body, logT, res, (err) => {
+              if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
+            });
+          } else {
+            const nodeStream = Readable.fromWeb(body);
+            pipeline(nodeStream as any, logT, res, (err) => {
+              if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
+            });
+          }
         }
         return; // Do not proceed to buffered path
       } catch (e) {
