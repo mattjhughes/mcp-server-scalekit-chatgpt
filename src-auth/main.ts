@@ -206,6 +206,63 @@ app.post('/', async (req: Request, res: Response) => {
       res.removeHeader('transfer-encoding');
       (res as any).flushHeaders?.();
 
+      // Lightweight logging of streamed payload without buffering or transforms
+      try {
+        const maxTotal = 64 * 1024; // cap total logged bytes per response
+        let totalLogged = 0;
+        let suppressLogged = false;
+        const origWrite = res.write.bind(res) as typeof res.write;
+        const origEnd = res.end.bind(res) as typeof res.end;
+
+        const logPreview = (buf: Buffer) => {
+          if (suppressLogged) return;
+          const preview = buf.subarray(0, Math.min(buf.length, 4096)).toString('utf8');
+          logger.info(`AUTH GATEWAY [${correlationId}]: SSE chunk (${buf.length} bytes): ${safeStringify(preview, 4096)}`);
+          totalLogged += buf.length;
+          if (totalLogged >= maxTotal) {
+            suppressLogged = true;
+            logger.info(`AUTH GATEWAY [${correlationId}]: Reached SSE response log cap (${maxTotal} bytes); suppressing further logs`);
+          }
+        };
+
+        // Patch write to log chunk previews
+        (res as any).write = function (chunk: any, encoding?: any, cb?: any) {
+          try {
+            let buf: Buffer;
+            if (Buffer.isBuffer(chunk)) {
+              buf = chunk;
+            } else if (typeof chunk === 'string') {
+              buf = Buffer.from(chunk, (typeof encoding === 'string' ? encoding : 'utf8') as BufferEncoding);
+            } else if (chunk instanceof Uint8Array) {
+              buf = Buffer.from(chunk);
+            } else {
+              buf = Buffer.from(String(chunk), 'utf8');
+            }
+            logPreview(buf);
+          } catch {}
+          return origWrite(chunk as any, encoding as any, cb as any);
+        };
+        // Patch end to log final chunk if present
+        (res as any).end = function (chunk?: any, encoding?: any, cb?: any) {
+          try {
+            if (chunk) {
+              let buf: Buffer;
+              if (Buffer.isBuffer(chunk)) {
+                buf = chunk;
+              } else if (typeof chunk === 'string') {
+                buf = Buffer.from(chunk, (typeof encoding === 'string' ? encoding : 'utf8') as BufferEncoding);
+              } else if (chunk instanceof Uint8Array) {
+                buf = Buffer.from(chunk);
+              } else {
+                buf = Buffer.from(String(chunk), 'utf8');
+              }
+              logPreview(buf);
+            }
+          } catch {}
+          return origEnd(chunk as any, encoding as any, cb as any);
+        };
+      } catch {}
+
       const body = resp.body as any;
       try {
         if (!body) {
