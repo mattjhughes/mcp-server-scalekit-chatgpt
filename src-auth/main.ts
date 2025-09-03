@@ -159,7 +159,7 @@ app.post('/', async (req: Request, res: Response) => {
     const backendHeadersObj = Object.fromEntries(resp.headers.entries());
     logger.info(`Backend response headers: ${safeStringify(redactHeaders(backendHeadersObj))}`);
 
-    // Remove hop-by-hop headers and CL/TE to avoid nginx conflicts when streaming
+    // Remove hop-by-hop headers list
     const hopByHop = new Set([
       'connection',
       'keep-alive',
@@ -172,34 +172,31 @@ app.post('/', async (req: Request, res: Response) => {
       'upgrade',
       'content-length',
     ]);
-    const sanitizedHeaders: Record<string, string> = {};
-    resp.headers.forEach((v, k) => {
-      const key = k.toLowerCase();
-      if (hopByHop.has(key)) return;
-      sanitizedHeaders[key] = v;
-    });
 
-    res.status(resp.status);
-    // Set correlation headers first
-    res.setHeader('x-request-id', correlationId);
-    res.setHeader('x-correlation-id', correlationId);
-    // Mirror sanitized headers
-    for (const [k, v] of Object.entries(sanitizedHeaders)) {
-      try { res.setHeader(k, v); } catch { /* ignore invalid header */ }
-    }
-    // Strengthen SSE headers if applicable
     if (isEventStream) {
-      res.setHeader('Cache-Control', res.getHeader('cache-control') || 'no-cache');
-      res.setHeader('Connection', res.getHeader('connection') || 'keep-alive');
+      // Stream SSE responses end-to-end; set headers once and flush
+      const sanitizedHeaders: Record<string, string> = {};
+      resp.headers.forEach((v, k) => {
+        const key = k.toLowerCase();
+        if (hopByHop.has(key)) return;
+        sanitizedHeaders[key] = v;
+      });
+
+      res.status(resp.status);
+      res.setHeader('x-request-id', correlationId);
+      res.setHeader('x-correlation-id', correlationId);
+      for (const [k, v] of Object.entries(sanitizedHeaders)) {
+        try { res.setHeader(k, v); } catch { /* ignore invalid header */ }
+      }
+      // Ensure SSE-friendly defaults
+      if (!res.getHeader('cache-control')) res.setHeader('Cache-Control', 'no-cache');
+      if (!res.getHeader('connection')) res.setHeader('Connection', 'keep-alive');
       res.setHeader('Content-Type', 'text/event-stream');
-    }
-    // Ensure CL/TE are not present to prevent CL+TE conflicts
-    res.removeHeader('content-length');
-    res.removeHeader('transfer-encoding');
-    (res as any).flushHeaders?.();
+      // Avoid CL+TE conflicts
+      res.removeHeader('content-length');
+      res.removeHeader('transfer-encoding');
+      (res as any).flushHeaders?.();
 
-    // Stream when event-stream; otherwise buffer and send
-    if (isEventStream) {
       const body = resp.body as any;
       try {
         if (!body) {
@@ -214,14 +211,21 @@ app.post('/', async (req: Request, res: Response) => {
             if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
           });
         }
-        return;
+        return; // Do not proceed to buffered path
       } catch (e) {
         logger.warn(`AUTH GATEWAY [${correlationId}]: Failed to stream body, falling back to buffer: ${(e as Error).message}`);
+        // Intentionally fall through to buffered path below
       }
     }
 
-    // Fallback / JSON: buffer and send
+    // Non-SSE: buffer and send (do not flush headers beforehand)
     const text = await resp.text();
+    res.status(resp.status);
+    res.setHeader('x-request-id', correlationId);
+    res.setHeader('x-correlation-id', correlationId);
+    if (contentType && !isEventStream) {
+      try { res.setHeader('Content-Type', contentType); } catch { /* ignore */ }
+    }
     logger.info(`AUTH GATEWAY [${correlationId}]: Backend response payload: ${safeStringify(text)}`);
     res.send(text);
   } catch (err) {
