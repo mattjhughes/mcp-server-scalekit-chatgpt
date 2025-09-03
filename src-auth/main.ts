@@ -1,7 +1,7 @@
 import cors from 'cors';
 import express, { Request, Response } from 'express';
 import fetch from 'node-fetch';
-import { Readable, pipeline } from 'stream';
+import { Readable, pipeline, Transform } from 'stream';
 import { randomUUID } from 'crypto';
 import { config } from './shared/config.js';
 import { authMiddleware, WWWHeader } from './shared/middleware.js';
@@ -36,6 +36,107 @@ function safeStringify(body: unknown, max = 8000): string {
 }
 
 // Avoid transforming SSE streams; transforms can introduce buffering
+
+// Fix MCP payloads where result.content[0].text contains a stringified JSON array;
+// Replace it with a stringified first element object.
+function fixMcpPayloadIfWrappedArray(jsonStr: string): string | null {
+  try {
+    const obj = JSON.parse(jsonStr);
+    const content = obj?.result?.content;
+    if (Array.isArray(content) && content.length > 0) {
+      const first = content[0];
+      if (first && first.type === 'text' && typeof first.text === 'string') {
+        const t = first.text.trim();
+        if (t.startsWith('[')) {
+          try {
+            const parsed = JSON.parse(t);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              first.text = JSON.stringify(parsed[0]);
+              return JSON.stringify(obj);
+            }
+          } catch {
+            // not a valid JSON array string; ignore
+          }
+        }
+      }
+    }
+  } catch {
+    // not JSON or unexpected shape; ignore
+  }
+  return null;
+}
+
+// Transform SSE stream: process event blocks (separated by blank line) and
+// if a data: line contains MCP JSON with wrapped array text, rewrite it.
+function createSseRewriteTransform(correlationId: string) {
+  let buf = '';
+  let currentLines: string[] = [];
+  class SseRewriteTransform extends Transform {
+    _transform(chunk: any, _enc: BufferEncoding, callback: (error?: Error | null) => void) {
+      try {
+        buf += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        const parts = buf.split('\n');
+        // Process all complete lines; keep the last as remainder (may be partial)
+        for (let i = 0; i < parts.length - 1; i++) {
+          const raw = parts[i];
+          const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw; // strip trailing CR if present
+          // Blank line indicates end of event block
+          if (line.length === 0) {
+            // Process accumulated lines as one event
+            const otherLines: string[] = [];
+            const dataLines: string[] = [];
+            for (const l of currentLines) {
+              if (l.startsWith('data:')) {
+                dataLines.push(l.slice(5).trimStart());
+              } else if (l.length > 0) {
+                otherLines.push(l);
+              }
+            }
+            if (dataLines.length > 0) {
+              const dataPayload = dataLines.join('\n');
+              const fixed = fixMcpPayloadIfWrappedArray(dataPayload);
+              if (fixed) {
+                logger.info(`AUTH GATEWAY [${correlationId}]: Rewrote SSE data payload (fixed wrapped array in text)`);
+                const out = [
+                  ...otherLines,
+                  `data: ${fixed}`,
+                  '', // delimiter blank line
+                ].join('\n');
+                this.push(out + '\n');
+              } else {
+                // No change; re-emit original block plus blank line
+                this.push(currentLines.join('\n') + '\n\n');
+              }
+            } else {
+              // No data lines; pass through as-is
+              this.push(currentLines.join('\n') + '\n\n');
+            }
+            currentLines = [];
+          } else {
+            currentLines.push(line);
+          }
+        }
+        // Remainder without trailing newline stays in buf
+        buf = parts[parts.length - 1];
+      } catch (e) {
+        logger.warn(`AUTH GATEWAY [${correlationId}]: SSE rewrite transform error: ${(e as Error).message}`);
+        // On error, pass through chunk as-is to avoid blocking
+        this.push(chunk);
+      }
+      callback();
+    }
+    _flush(callback: (error?: Error | null) => void) {
+      // Emit any remaining lines without forcing a block; pass through
+      if (currentLines.length > 0) {
+        this.push(currentLines.join('\n') + (buf.length ? '\n' + buf : ''));
+      } else if (buf.length) {
+        this.push(buf);
+      }
+      callback();
+    }
+  }
+  return new SseRewriteTransform();
+}
 
 app.use(cors({
   origin: [config.publicBaseUrl, config.skEnvUrl, 'http://localhost:6274'],
@@ -268,11 +369,13 @@ app.post('/', async (req: Request, res: Response) => {
         if (!body) {
           res.end();
         } else if (typeof body.pipe === 'function') {
-          // Stream raw bytes; no transforms to avoid buffering
-          body.pipe(res);
+          // Insert a minimal rewrite transform that maintains chunking
+          const rewrite = createSseRewriteTransform(correlationId);
+          body.pipe(rewrite).pipe(res);
         } else {
           const nodeStream = Readable.fromWeb(body);
-          nodeStream.pipe(res);
+          const rewrite = createSseRewriteTransform(correlationId);
+          nodeStream.pipe(rewrite).pipe(res);
         }
         // Cleanup: if client disconnects, tear down upstream stream
         const onClose = () => {
@@ -296,7 +399,13 @@ app.post('/', async (req: Request, res: Response) => {
     }
 
     // Non-SSE: buffer and send (do not flush headers beforehand)
-    const text = await resp.text();
+    let text = await resp.text();
+    // Attempt to fix non-SSE JSON responses with wrapped array in text
+    const maybeFixed = fixMcpPayloadIfWrappedArray(text);
+    if (maybeFixed) {
+      logger.info(`AUTH GATEWAY [${correlationId}]: Rewrote JSON response payload (fixed wrapped array in text)`);
+      text = maybeFixed;
+    }
     res.status(resp.status);
     res.setHeader('x-request-id', correlationId);
     res.setHeader('x-correlation-id', correlationId);
