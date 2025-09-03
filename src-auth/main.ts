@@ -1,7 +1,7 @@
 import cors from 'cors';
 import express, { Request, Response } from 'express';
 import fetch from 'node-fetch';
-import { Readable, pipeline, Transform } from 'stream';
+import { Readable, pipeline } from 'stream';
 import { randomUUID } from 'crypto';
 import { config } from './shared/config.js';
 import { authMiddleware, WWWHeader } from './shared/middleware.js';
@@ -35,32 +35,7 @@ function safeStringify(body: unknown, max = 8000): string {
   }
 }
 
-// Create a Transform that logs chunks while passing them through unchanged
-function createResponseLoggingTransform(correlationId: string, maxTotalBytes = 64 * 1024) {
-  let total = 0;
-  let suppressed = false;
-  return new Transform({
-    transform(chunk, _enc, cb) {
-      try {
-        if (!suppressed) {
-          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-          total += buf.length;
-          // Log a readable slice to avoid massive logs
-          const preview = buf.subarray(0, Math.min(buf.length, 4096)).toString('utf8');
-          logger.info(`AUTH GATEWAY [${correlationId}]: SSE chunk (${buf.length} bytes): ${safeStringify(preview, 4096)}`);
-          if (total >= maxTotalBytes) {
-            suppressed = true;
-            logger.info(`AUTH GATEWAY [${correlationId}]: Reached response log cap (${maxTotalBytes} bytes); suppressing further chunk logs`);
-          }
-        }
-      } catch (e) {
-        logger.warn(`AUTH GATEWAY [${correlationId}]: Failed to log SSE chunk: ${(e as Error).message}`);
-      }
-      this.push(chunk);
-      cb();
-    }
-  });
-}
+// Avoid transforming SSE streams; transforms can introduce buffering
 
 app.use(cors({
   origin: [config.publicBaseUrl, config.skEnvUrl, 'http://localhost:6274'],
@@ -159,6 +134,8 @@ app.post('/', async (req: Request, res: Response) => {
       ...(mcpVersion ? { 'mcp-protocol-version': mcpVersion } : {}),
   // Ensure MCP server sees JSON + SSE support
   'accept': acceptHeader,
+      // Prevent upstream compression that could coalesce SSE chunks
+      'accept-encoding': 'identity',
       'x-request-id': correlationId,
       'x-correlation-id': correlationId,
       ...(xff ? { 'x-forwarded-for': xff } : {}),
@@ -215,10 +192,13 @@ app.post('/', async (req: Request, res: Response) => {
       for (const [k, v] of Object.entries(sanitizedHeaders)) {
         try { res.setHeader(k, v); } catch { /* ignore invalid header */ }
       }
-      // Ensure SSE-friendly defaults
-      if (!res.getHeader('cache-control')) res.setHeader('Cache-Control', 'no-cache');
-      if (!res.getHeader('connection')) res.setHeader('Connection', 'keep-alive');
+      // Ensure SSE-friendly defaults and disable buffering/compression
       res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      // Prevent compression/buffering by proxies and servers (nginx, etc.)
+      res.setHeader('Content-Encoding', 'identity');
+      res.setHeader('X-Accel-Buffering', 'no');
       // Avoid CL+TE conflicts
       res.removeHeader('content-length');
       res.removeHeader('transfer-encoding');
@@ -228,19 +208,27 @@ app.post('/', async (req: Request, res: Response) => {
       try {
         if (!body) {
           res.end();
+        } else if (typeof body.pipe === 'function') {
+          // Stream raw bytes; no transforms to avoid buffering
+          body.pipe(res);
         } else {
-          const logT = createResponseLoggingTransform(correlationId);
-          if (typeof body.pipe === 'function') {
-            pipeline(body, logT, res, (err) => {
-              if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
-            });
-          } else {
-            const nodeStream = Readable.fromWeb(body);
-            pipeline(nodeStream as any, logT, res, (err) => {
-              if (err) logger.warn(`Proxy stream pipeline error [${correlationId}]: ${err.message}`);
-            });
-          }
+          const nodeStream = Readable.fromWeb(body);
+          nodeStream.pipe(res);
         }
+        // Cleanup: if client disconnects, tear down upstream stream
+        const onClose = () => {
+          try {
+            if (body && typeof body.destroy === 'function') {
+              body.destroy(new Error('client disconnected'));
+            } else if (body && typeof body.cancel === 'function') {
+              body.cancel('client disconnected');
+            }
+          } catch (e) {
+            logger.warn(`AUTH GATEWAY [${correlationId}]: Error cancelling upstream body: ${(e as Error).message}`);
+          }
+        };
+        req.on('close', onClose);
+        res.on('close', () => req.off('close', onClose));
         return; // Do not proceed to buffered path
       } catch (e) {
         logger.warn(`AUTH GATEWAY [${correlationId}]: Failed to stream body, falling back to buffer: ${(e as Error).message}`);
