@@ -41,7 +41,7 @@ app.use(cors({
   origin: [config.publicBaseUrl, config.skEnvUrl, 'http://localhost:6274'],
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'mcp-protocol-version']
+  allowedHeaders: ['Content-Type', 'Authorization', 'mcp-protocol-version', 'mcp-session-id']
 }));
 app.use(express.json());
 
@@ -100,7 +100,8 @@ app.post('/', async (req: Request, res: Response) => {
   try {
     const backendUrl = config.backendServerUrl;
     const authHeader = req.headers['authorization'] as string | undefined;
-    const mcpVersion = req.headers['mcp-protocol-version'] as string | undefined;
+  const mcpVersion = req.headers['mcp-protocol-version'] as string | undefined;
+  const mcpSessionId = req.headers['mcp-session-id'] as string | undefined;
     const incomingReqId = (req.headers['x-request-id'] || req.headers['x-correlation-id']) as string | undefined;
     const correlationId = incomingReqId || randomUUID();
 
@@ -132,6 +133,7 @@ app.post('/', async (req: Request, res: Response) => {
       'Content-Type': 'application/json',
       ...(authHeader ? { Authorization: authHeader } : {}),
       ...(mcpVersion ? { 'mcp-protocol-version': mcpVersion } : {}),
+      ...(mcpSessionId ? { 'mcp-session-id': mcpSessionId } : {}),
   // Ensure MCP server sees JSON + SSE support
   'accept': acceptHeader,
       // Prevent upstream compression that could coalesce SSE chunks
